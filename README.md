@@ -12,6 +12,8 @@ A macOS notch widget that monitors [Claude Code](https://docs.anthropic.com/en/d
 - **Jump to the right terminal tab** with one click or the global hotkey (supports Ghostty, Terminal.app, iTerm2, Kitty)
 - **Prevent sleep** while Claude is working
 - **Review plans** inline when Claude proposes an implementation
+- **See URLs** Claude wants to fetch, clickable to open in your browser
+- **Customizable** font size and notch width
 
 ## Requirements
 
@@ -176,7 +178,7 @@ Click any session row to activate the correct terminal tab. The app detects whic
 
 | Terminal | Method |
 |----------|--------|
-| Ghostty (1.3+) | AppleScript — matches by tab name and working directory |
+| Ghostty | AppleScript — matches by TTY, tab name, and working directory |
 | Terminal.app | AppleScript — matches by TTY device |
 | iTerm2 | AppleScript — matches by TTY device |
 | Kitty | `kitten @ focus-window --match pid:<pid>` |
@@ -201,13 +203,24 @@ On launch, ClaudeNotch reads `~/.claude/sessions/*.json` to detect already-runni
 
 ## Settings
 
+### General
 | Setting | Default | Description |
 |---------|---------|-------------|
 | Prevent sleep | On | Block macOS sleep while Claude is working |
 | Play sound | On | Alert sound on state changes |
-| Show status text | On | Display text in the collapsed notch bar |
 | Auto-expand on approval | Off | Auto-expand notch when approval needed |
 | Launch at login | Off | Start ClaudeNotch when you log in |
+
+### Appearance
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Show status text | On | Display text in the collapsed notch bar |
+| Fit width to text | Off | Expand notch pill to fit label instead of fixed width |
+| Font size | M | Scale all notch text (System, XS, S, M, L, XL, XXL) |
+
+### Server
+| Setting | Default | Description |
+|---------|---------|-------------|
 | Port | 7483 | Local HTTP server port for hooks |
 
 ## Architecture
@@ -232,7 +245,7 @@ ClaudeNotch/
   Views/
     NotchOverlay.swift         # Dynamic Island-style floating overlay
     MenuBarView.swift          # Menu bar dropdown with session list and controls
-    SettingsView.swift         # Settings window (General, Server, Permissions tabs)
+    SettingsView.swift         # Settings window (General, Appearance, Server, Permissions)
     OnboardingView.swift       # Hooks setup guide with copy-to-clipboard
   Utilities/
     NotchWindow.swift          # NSPanel configured as floating overlay
