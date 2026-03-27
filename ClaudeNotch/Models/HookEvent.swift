@@ -1,0 +1,94 @@
+import Foundation
+
+enum HookEventType: String, Codable, CaseIterable {
+    case SessionStart
+    case SessionEnd
+    case PreToolUse
+    case PostToolUse
+    case Stop
+    case Notification
+    case PermissionRequest
+    case UserPromptSubmit
+}
+
+struct HookPayload: Codable {
+    let session_id: String
+    let cwd: String
+    let hook_event_name: String
+
+    // Tool events
+    let tool_name: String?
+    let tool_input: JSONValue?
+
+    // Notification events
+    let notification_type: String?
+
+    // Session end
+    let reason: String?
+
+    init(session_id: String, cwd: String, hook_event_name: String, tool_name: String? = nil, tool_input: JSONValue? = nil, notification_type: String? = nil, reason: String? = nil) {
+        self.session_id = session_id
+        self.cwd = cwd
+        self.hook_event_name = hook_event_name
+        self.tool_name = tool_name
+        self.tool_input = tool_input
+        self.notification_type = notification_type
+        self.reason = reason
+    }
+
+    static func test(sessionId: String, cwd: String, eventName: String, toolName: String? = nil) -> HookPayload {
+        HookPayload(session_id: sessionId, cwd: cwd, hook_event_name: eventName, tool_name: toolName)
+    }
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        session_id = try container.decode(String.self, forKey: .session_id)
+        cwd = try container.decode(String.self, forKey: .cwd)
+        hook_event_name = try container.decode(String.self, forKey: .hook_event_name)
+        tool_name = try container.decodeIfPresent(String.self, forKey: .tool_name)
+        tool_input = try container.decodeIfPresent(JSONValue.self, forKey: .tool_input)
+        notification_type = try container.decodeIfPresent(String.self, forKey: .notification_type)
+        reason = try container.decodeIfPresent(String.self, forKey: .reason)
+    }
+}
+
+/// Flexible JSON value type for arbitrary tool_input fields
+enum JSONValue: Codable {
+    case string(String)
+    case number(Double)
+    case bool(Bool)
+    case object([String: JSONValue])
+    case array([JSONValue])
+    case null
+
+    init(from decoder: Decoder) throws {
+        let container = try decoder.singleValueContainer()
+        if container.decodeNil() {
+            self = .null
+        } else if let bool = try? container.decode(Bool.self) {
+            self = .bool(bool)
+        } else if let number = try? container.decode(Double.self) {
+            self = .number(number)
+        } else if let string = try? container.decode(String.self) {
+            self = .string(string)
+        } else if let object = try? container.decode([String: JSONValue].self) {
+            self = .object(object)
+        } else if let array = try? container.decode([JSONValue].self) {
+            self = .array(array)
+        } else {
+            self = .null
+        }
+    }
+
+    func encode(to encoder: Encoder) throws {
+        var container = encoder.singleValueContainer()
+        switch self {
+        case .string(let s): try container.encode(s)
+        case .number(let n): try container.encode(n)
+        case .bool(let b): try container.encode(b)
+        case .object(let o): try container.encode(o)
+        case .array(let a): try container.encode(a)
+        case .null: try container.encodeNil()
+        }
+    }
+}
