@@ -6,7 +6,8 @@ private let logger = Logger(subsystem: "com.claudenotch", category: "HookServer"
 
 /// Represents a pending permission decision — the connection is held open until resolved
 struct PendingDecision: Identifiable {
-    let id: String  // session_id
+    let id: UUID
+    let sessionId: String
     let toolName: String
     let toolInput: JSONValue?
     let toolSummary: String?
@@ -27,8 +28,14 @@ final class HookServer {
     /// Called when a permission decision is made (allow/deny/dismiss) with (sessionId, wasAllowed)
     var onDecision: ((String, Bool) -> Void)?
 
-    /// Currently pending permission decisions waiting for user input
-    private(set) var pendingDecisions: [String: PendingDecision] = [:]
+    /// Queued permission decisions per session, waiting for user input.
+    /// Each session can have multiple pending approvals; the UI shows the first.
+    private(set) var pendingDecisions: [String: [PendingDecision]] = [:]
+
+    /// Convenience: get the next pending decision for a session
+    func nextPending(for sessionId: String) -> PendingDecision? {
+        pendingDecisions[sessionId]?.first
+    }
 
     init(port: UInt16 = Constants.defaultPort) {
         self.port = port
@@ -71,9 +78,11 @@ final class HookServer {
     }
 
     func stop() {
-        // Release any pending connections
-        for (_, pending) in pendingDecisions {
-            sendEmptyResponse(pending.connection)
+        // Release all pending connections
+        for (_, queue) in pendingDecisions {
+            for pending in queue {
+                sendEmptyResponse(pending.connection)
+            }
         }
         pendingDecisions.removeAll()
 
@@ -89,9 +98,26 @@ final class HookServer {
 
     // MARK: - Permission Decision API
 
+    /// Pop the next pending decision from the queue for a session
+    private func dequeue(sessionId: String) -> PendingDecision? {
+        guard var queue = pendingDecisions[sessionId], !queue.isEmpty else { return nil }
+        let pending = queue.removeFirst()
+        if queue.isEmpty {
+            pendingDecisions.removeValue(forKey: sessionId)
+        } else {
+            pendingDecisions[sessionId] = queue
+        }
+        return pending
+    }
+
+    /// Number of queued approvals for a session
+    func pendingCount(for sessionId: String) -> Int {
+        pendingDecisions[sessionId]?.count ?? 0
+    }
+
     /// Allow a pending permission request
     func allowPermission(sessionId: String) {
-        guard let pending = pendingDecisions.removeValue(forKey: sessionId) else { return }
+        guard let pending = dequeue(sessionId: sessionId) else { return }
 
         let decision = """
         {"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}
@@ -100,15 +126,14 @@ final class HookServer {
         pending.connection.send(content: response, completion: .contentProcessed { _ in
             pending.connection.cancel()
         })
-        logger.info("Allowed permission for session \(sessionId)")
+        logger.info("Allowed permission for session \(sessionId) (\(self.pendingCount(for: sessionId)) remaining)")
         onDecision?(sessionId, true)
     }
 
     /// Allow and add a permanent rule so this tool/command is never asked again
     func allowAlwaysPermission(sessionId: String) {
-        guard let pending = pendingDecisions.removeValue(forKey: sessionId) else { return }
+        guard let pending = dequeue(sessionId: sessionId) else { return }
 
-        // Build the decision using Codable for reliable JSON
         struct Rule: Encodable {
             let toolName: String
             let ruleContent: String?
@@ -131,7 +156,6 @@ final class HookServer {
             let hookSpecificOutput: HookOutput
         }
 
-        // Extract rule content from tool_input
         var ruleContent: String?
         if let toolInput = pending.toolInput, case .object(let obj) = toolInput {
             if case .string(let cmd) = obj["command"] {
@@ -154,7 +178,6 @@ final class HookServer {
         if let data = try? JSONEncoder().encode(resp), let json = String(data: data, encoding: .utf8) {
             body = json
         } else {
-            // Fallback to simple allow
             body = "{\"hookSpecificOutput\":{\"hookEventName\":\"PermissionRequest\",\"decision\":{\"behavior\":\"allow\"}}}"
         }
 
@@ -164,13 +187,13 @@ final class HookServer {
         pending.connection.send(content: response, completion: .contentProcessed { _ in
             pending.connection.cancel()
         })
-        logger.info("Always-allowed \(pending.toolName) for session \(sessionId)")
+        logger.info("Always-allowed \(pending.toolName) for session \(sessionId) (\(self.pendingCount(for: sessionId)) remaining)")
         onDecision?(sessionId, true)
     }
 
     /// Deny a pending permission request
     func denyPermission(sessionId: String, message: String = "Denied from Claude Notch") {
-        guard let pending = pendingDecisions.removeValue(forKey: sessionId) else { return }
+        guard let pending = dequeue(sessionId: sessionId) else { return }
 
         let escapedMessage = message.replacingOccurrences(of: "\"", with: "\\\"")
         let decision = """
@@ -180,20 +203,73 @@ final class HookServer {
         pending.connection.send(content: response, completion: .contentProcessed { _ in
             pending.connection.cancel()
         })
-        logger.info("Denied permission for session \(sessionId)")
+        logger.info("Denied permission for session \(sessionId) (\(self.pendingCount(for: sessionId)) remaining)")
         onDecision?(sessionId, false)
     }
 
     /// Dismiss — let the normal Claude Code permission dialog handle it
     func dismissPermission(sessionId: String) {
-        guard let pending = pendingDecisions.removeValue(forKey: sessionId) else { return }
+        guard let pending = dequeue(sessionId: sessionId) else { return }
         sendEmptyResponse(pending.connection)
-        logger.info("Dismissed permission for session \(sessionId) (falling through to CLI)")
+        logger.info("Dismissed permission for session \(sessionId) (\(self.pendingCount(for: sessionId)) remaining)")
         onDecision?(sessionId, false)
     }
 
+    /// Allow a specific pending decision by UUID (for show-all mode)
+    func allowSpecificPermission(id: UUID, sessionId: String) {
+        guard var queue = pendingDecisions[sessionId],
+              let index = queue.firstIndex(where: { $0.id == id }) else { return }
+        let pending = queue.remove(at: index)
+        if queue.isEmpty { pendingDecisions.removeValue(forKey: sessionId) }
+        else { pendingDecisions[sessionId] = queue }
+
+        let decision = """
+        {"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}
+        """
+        let response = HTTPParser.okResponse(body: decision)
+        pending.connection.send(content: response, completion: .contentProcessed { _ in
+            pending.connection.cancel()
+        })
+        logger.info("Allowed specific permission \(pending.toolName) for session \(sessionId)")
+        if pendingCount(for: sessionId) == 0 {
+            onDecision?(sessionId, true)
+        }
+    }
+
+    /// Deny a specific pending decision by UUID (for show-all mode)
+    func denySpecificPermission(id: UUID, sessionId: String) {
+        guard var queue = pendingDecisions[sessionId],
+              let index = queue.firstIndex(where: { $0.id == id }) else { return }
+        let pending = queue.remove(at: index)
+        if queue.isEmpty { pendingDecisions.removeValue(forKey: sessionId) }
+        else { pendingDecisions[sessionId] = queue }
+
+        let decision = """
+        {"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny","message":"Denied from Claude Notch"}}}
+        """
+        let response = HTTPParser.okResponse(body: decision)
+        pending.connection.send(content: response, completion: .contentProcessed { _ in
+            pending.connection.cancel()
+        })
+        logger.info("Denied specific permission \(pending.toolName) for session \(sessionId)")
+        if pendingCount(for: sessionId) == 0 {
+            onDecision?(sessionId, false)
+        }
+    }
+
+    /// Flush all pending decisions for a session (they're stale — user handled it in the TUI)
+    func flushPendingDecisions(for sessionId: String) {
+        guard let queue = pendingDecisions.removeValue(forKey: sessionId) else { return }
+        for pending in queue {
+            sendEmptyResponse(pending.connection)
+        }
+        if !queue.isEmpty {
+            logger.info("Flushed \(queue.count) stale pending decision(s) for session \(sessionId)")
+        }
+    }
+
     var hasPendingDecisions: Bool {
-        !pendingDecisions.isEmpty
+        pendingDecisions.values.contains { !$0.isEmpty }
     }
 
     // MARK: - Connection Handling
@@ -251,7 +327,8 @@ final class HookServer {
             )
 
             let pending = PendingDecision(
-                id: payload.session_id,
+                id: UUID(),
+                sessionId: payload.session_id,
                 toolName: payload.tool_name ?? "Unknown",
                 toolInput: payload.tool_input,
                 toolSummary: summary,
@@ -261,11 +338,11 @@ final class HookServer {
 
             Task { @MainActor [weak self] in
                 guard let self else { return }
-                // Replace any existing pending decision for this session
-                if let old = pendingDecisions[payload.session_id] {
-                    sendEmptyResponse(old.connection)
-                }
-                pendingDecisions[payload.session_id] = pending
+                // Append to the queue for this session
+                var queue = pendingDecisions[payload.session_id] ?? []
+                queue.append(pending)
+                pendingDecisions[payload.session_id] = queue
+                logger.info("Queued permission \(pending.toolName) for session \(payload.session_id) (queue size: \(queue.count))")
                 onEvent?(payload)
             }
             return
@@ -285,4 +362,25 @@ final class HookServer {
             connection.cancel()
         })
     }
+
+    // MARK: - Preview Support
+
+    #if DEBUG
+    /// Queue a fake pending decision for previews (no real connection).
+    func addPreviewPending(sessionId: String, toolName: String, toolInput: JSONValue? = nil, toolSummary: String? = nil) {
+        let dummy = NWConnection(host: "127.0.0.1", port: 1, using: .tcp)
+        let pending = PendingDecision(
+            id: UUID(),
+            sessionId: sessionId,
+            toolName: toolName,
+            toolInput: toolInput,
+            toolSummary: toolSummary,
+            connection: dummy,
+            receivedAt: Date()
+        )
+        var queue = pendingDecisions[sessionId] ?? []
+        queue.append(pending)
+        pendingDecisions[sessionId] = queue
+    }
+    #endif
 }

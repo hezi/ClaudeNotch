@@ -129,6 +129,8 @@ struct MenuBarView: View {
                     .font(.system(size: 10))
                     .foregroundStyle(.secondary.opacity(0.5))
 
+                ModeBadge(mode: session.permissionMode)
+
                 Text(session.elapsedFormatted)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
@@ -142,7 +144,7 @@ struct MenuBarView: View {
     // MARK: - Approval Item (Allow/Deny/Skip)
 
     private func approvalItem(_ session: Session) -> some View {
-        let pending = appState.hookServer.pendingDecisions[session.id]
+        let pending = appState.hookServer.nextPending(for: session.id)
         let hasPending = pending != nil
         let toolName = pending?.toolName ?? session.currentTool
         let summary = pending?.toolSummary ?? session.pendingToolSummary
@@ -228,7 +230,7 @@ struct MenuBarView: View {
     // MARK: - Question Item (AskUserQuestion)
 
     private func questionItem(_ session: Session) -> some View {
-        let pending = appState.hookServer.pendingDecisions[session.id]
+        let pending = appState.hookServer.nextPending(for: session.id)
         let question = pending?.toolSummary ?? session.pendingToolSummary
 
         return VStack(alignment: .leading, spacing: 6) {
@@ -285,7 +287,7 @@ struct MenuBarView: View {
     // MARK: - Plan Review Item
 
     private func planReviewItem(_ session: Session) -> some View {
-        let hasPending = appState.hookServer.pendingDecisions[session.id] != nil
+        let hasPending = appState.hookServer.nextPending(for: session.id) != nil
 
         return VStack(alignment: .leading, spacing: 6) {
             // Header
@@ -433,3 +435,26 @@ struct MenuBarView: View {
         }
     }
 }
+
+// MARK: - Previews
+
+#if DEBUG
+#Preview("Menu Bar") {
+    let state = AppState()
+    state.sendTestEvent("PreToolUse", toolName: "Bash")
+    return MenuBarView(appState: state)
+}
+
+#Preview("With Approval") {
+    let state = AppState()
+    state.sendTestEvent("PreToolUse", toolName: "Edit")
+    DispatchQueue.main.async {
+        state.sendTestNotification(type: "permission_prompt")
+    }
+    return MenuBarView(appState: state)
+}
+
+#Preview("Empty") {
+    MenuBarView(appState: AppState())
+}
+#endif

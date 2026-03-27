@@ -14,6 +14,9 @@ enum Constants {
         static let autoExpandOnApproval = "autoExpandOnApproval"
         static let fitNotchToText = "fitNotchToText"
         static let notchFontScale = "notchFontScale"
+        static let liquidGlass = "liquidGlass"
+        static let glassFrost = "glassFrost"
+        static let showAllApprovals = "showAllApprovals"
     }
 }
 
