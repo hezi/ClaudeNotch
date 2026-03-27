@@ -10,6 +10,9 @@ final class SessionManager {
     private var cleanupTimers: [String: Timer] = [:]
 
     var onStateChange: ((Session, SessionState) -> Void)?
+    /// Called when a non-permission event arrives for a session that has pending decisions.
+    /// AppState wires this to HookServer to flush stale pending decisions.
+    var onStalePendingDecisions: ((String) -> Void)?
 
     var activeSessions: [Session] {
         sessions.values
@@ -81,6 +84,14 @@ final class SessionManager {
 
         logger.info("Event: \(event.hook_event_name) session=\(event.session_id)")
 
+        // If a "forward progress" event arrives for a session with pending decisions,
+        // those decisions are stale (user handled it in the TUI, or curl timed out).
+        // Only flush on events that prove the permission was already resolved:
+        let flushEvents: Set<HookEventType> = [.PostToolUse, .Stop, .UserPromptSubmit, .SessionEnd]
+        if flushEvents.contains(eventType) {
+            onStalePendingDecisions?(event.session_id)
+        }
+
         switch eventType {
         case .SessionStart:
             handleSessionStart(event)
@@ -107,6 +118,7 @@ final class SessionManager {
         if let existing = sessions[event.session_id] {
             existing.lastActivity = Date()
             existing.cwd = event.cwd
+            if let mode = event.permission_mode { existing.permissionMode = mode }
             // Retry enrichment if missing terminal info or name, but throttle to avoid
             // scanning session files on every event (at most once per 30 seconds)
             if existing.processPID == nil || existing.name == nil {
@@ -183,12 +195,14 @@ final class SessionManager {
             merged.processPID = bootstrapped.processPID
             merged.tty = bootstrapped.tty
             merged.terminalBundleId = bootstrapped.terminalBundleId
+            merged.permissionMode = event.permission_mode
             sessions[event.session_id] = merged
             return merged
         }
 
         logger.info("[match] no bootstrap match, creating new session")
         let session = Session(id: event.session_id, cwd: event.cwd)
+        session.permissionMode = event.permission_mode
         enrichFromSessionFiles(session)
         sessions[event.session_id] = session
         return session
@@ -321,13 +335,18 @@ final class SessionManager {
             let (preview, path) = Self.findLatestPlan()
             session.pendingPlanPreview = preview
             session.pendingPlanPath = path
-            session.pendingToolSummary = nil // we'll show the plan preview instead
+            session.pendingToolSummary = nil
         } else {
             session.pendingPlanPreview = nil
             session.pendingPlanPath = nil
         }
 
-        transition(session, to: .awaitingApproval)
+        // Always force update — a PendingDecision was just created, so the UI
+        // needs to refresh even if the state was already .awaitingApproval
+        // (e.g. Notification(permission_prompt) arrived first)
+        session.state = .awaitingApproval
+        session.lastActivity = Date()
+        onStateChange?(session, .awaitingApproval)
     }
 
     private func handleNotification(_ event: HookPayload) {

@@ -42,12 +42,24 @@ final class AppState {
             self?.sessionManager.handleEvent(payload)
         }
 
+        sessionManager.onStalePendingDecisions = { [weak self] sessionId in
+            self?.hookServer.flushPendingDecisions(for: sessionId)
+        }
+
         hookServer.onDecision = { [weak self] sessionId, allowed in
             guard let self, let session = sessionManager.sessions[sessionId] else { return }
-            // Allowed → back to working (tool will run), Denied → back to idle
-            session.state = allowed ? .working : .idle
-            session.pendingToolSummary = nil
-            if !allowed { session.currentTool = nil }
+
+            // If more approvals are queued, stay in awaitingApproval and update the display
+            if hookServer.pendingCount(for: sessionId) > 0,
+               let next = hookServer.nextPending(for: sessionId) {
+                session.currentTool = next.toolName
+                session.pendingToolSummary = next.toolSummary
+                // state stays .awaitingApproval
+            } else {
+                session.state = allowed ? .working : .idle
+                session.pendingToolSummary = nil
+                if !allowed { session.currentTool = nil }
+            }
         }
 
         sessionManager.onStateChange = { [weak self] session, newState in
