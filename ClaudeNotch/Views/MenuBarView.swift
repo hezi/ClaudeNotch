@@ -122,15 +122,27 @@ struct MenuBarView: View {
 
                 Spacer()
 
-                Image(systemName: "arrow.up.forward.app")
-                    .font(.system(size: 10))
-                    .foregroundStyle(.secondary.opacity(0.5))
-
                 ModeBadge(mode: session.permissionMode)
 
                 Text(session.elapsedFormatted)
                     .font(.system(size: 10, design: .monospaced))
                     .foregroundStyle(.secondary)
+
+                Button { TerminalActivator.activate(session: session) } label: {
+                    Image(systemName: "apple.terminal")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary.opacity(0.5))
+                }
+                .buttonStyle(.plain)
+                .help("Open in terminal")
+
+                Button { NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd)) } label: {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10))
+                        .foregroundStyle(.secondary.opacity(0.5))
+                }
+                .buttonStyle(.plain)
+                .help("Open folder in Finder")
             }
         }
         .buttonStyle(.plain)
@@ -270,7 +282,7 @@ struct MenuBarView: View {
                 // Dismiss the pending decision so it falls through to the CLI
                 appState.hookServer.dismissPermission(sessionId: session.id)
             } label: {
-                Label("Answer in Terminal", systemImage: "arrow.up.forward.app")
+                Label("Answer in Terminal", systemImage: "apple.terminal.fill")
                     .font(.system(size: 10, weight: .semibold))
             }
             .buttonStyle(.borderedProminent)
