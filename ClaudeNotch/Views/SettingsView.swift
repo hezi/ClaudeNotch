@@ -30,14 +30,16 @@ struct SettingsView: View {
     @State private var selectedTab: SettingsTab = .general
 
     var body: some View {
-        NavigationSplitView {
+        HStack(spacing: 0) {
             List(SettingsTab.allCases, selection: $selectedTab) { tab in
                 Label(tab.label, systemImage: tab.icon)
                     .tag(tab)
             }
             .listStyle(.sidebar)
-            .navigationSplitViewColumnWidth(min: 140, ideal: 150, max: 180)
-        } detail: {
+            .frame(width: 160)
+
+            Divider()
+
             Group {
                 switch selectedTab {
                 case .general: GeneralPane(appState: appState)
@@ -103,6 +105,8 @@ private struct AppearancePane: View {
     @AppStorage(Constants.UserDefaultsKeys.notchFontScale) private var fontScaleRaw = NotchFontScale.m.rawValue
     @AppStorage(Constants.UserDefaultsKeys.liquidGlass) private var liquidGlass = false
     @AppStorage(Constants.UserDefaultsKeys.glassFrost) private var glassFrost = 0.3
+    @AppStorage(Constants.UserDefaultsKeys.expandedWidth) private var expandedWidth = 340.0
+    @AppStorage(Constants.UserDefaultsKeys.appearanceMode) private var appearanceMode = "system"
 
     private var fontScale: NotchFontScale {
         NotchFontScale(rawValue: fontScaleRaw) ?? .m
@@ -110,6 +114,15 @@ private struct AppearancePane: View {
 
     var body: some View {
         Form {
+            Section("Theme") {
+                Picker("Appearance", selection: $appearanceMode) {
+                    Text("System").tag("system")
+                    Text("Dark").tag("dark")
+                    Text("Light").tag("light")
+                }
+                .pickerStyle(.segmented)
+            }
+
             Section("Notch Pill") {
                 Toggle("Show status text", isOn: $showText)
                 Toggle("Fit width to text", isOn: $fitToText)
@@ -119,6 +132,13 @@ private struct AppearancePane: View {
                         Slider(value: $glassFrost, in: 0...0.7, step: 0.05)
                             .frame(width: 160)
                     }
+                }
+            }
+
+            Section("Expanded View") {
+                LabeledContent("Width: \(Int(expandedWidth))px") {
+                    Slider(value: $expandedWidth, in: 280...500, step: 10)
+                        .frame(width: 180)
                 }
             }
 
@@ -133,7 +153,7 @@ private struct AppearancePane: View {
             }
 
             Section("Preview") {
-                NotchPreview(fontScale: fontScale, fitToText: fitToText, showText: showText, liquidGlass: liquidGlass, glassFrost: glassFrost)
+                NotchPreview(fontScale: fontScale, fitToText: fitToText, showText: showText, liquidGlass: liquidGlass, glassFrost: glassFrost, expandedWidth: expandedWidth)
                     .frame(maxWidth: .infinity)
                     .padding(.vertical, 4)
             }
@@ -150,6 +170,7 @@ private struct NotchPreview: View {
     let showText: Bool
     let liquidGlass: Bool
     let glassFrost: Double
+    let expandedWidth: Double
     @Environment(\.colorScheme) private var colorScheme
 
     private var fg: Color { colorScheme == .dark ? .white : .black }
@@ -219,7 +240,7 @@ private struct NotchPreview: View {
         .padding(.horizontal, 10)
         .padding(.vertical, 10)
         .modifier(PreviewGlassModifier(cornerRadius: 20, glowColor: .yellow, useGlass: liquidGlass, fillColor: bg, frost: glassFrost))
-        .frame(width: 340)
+        .frame(width: expandedWidth)
     }
 
     private func mockRow(name: String, detail: String, state: SessionState, time: String) -> some View {

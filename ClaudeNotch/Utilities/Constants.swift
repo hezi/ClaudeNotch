@@ -17,6 +17,8 @@ enum Constants {
         static let liquidGlass = "liquidGlass"
         static let glassFrost = "glassFrost"
         static let showAllApprovals = "showAllApprovals"
+        static let expandedWidth = "expandedWidth"
+        static let appearanceMode = "appearanceMode"
     }
 }
 

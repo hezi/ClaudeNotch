@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Combine
 
 @Observable
 @MainActor
@@ -20,6 +21,7 @@ final class AppState {
     private var onboardingWindow: NSWindow?
     private var settingsWindow: NSWindow?
     private var globalHotkeyMonitor: Any?
+    private var appearanceObserver: AnyCancellable?
 
     /// Posted when the notch should auto-expand (e.g. approval came in)
     var shouldAutoExpand = false
@@ -35,6 +37,7 @@ final class AppState {
         sessionManager.bootstrapFromRunningProcesses()
         createNotchWindow()
         registerGlobalHotkey()
+        observeAppearanceChanges()
     }
 
     private func setupBindings() {
@@ -107,6 +110,9 @@ final class AppState {
     }
 
     private func createNotchWindow() {
+        // Always close the old window first — NSPanels stay visible
+        // even after dropping the reference until explicitly closed.
+        notchWindow?.close()
         let overlay = NotchOverlay(sessionManager: sessionManager, hookServer: hookServer, appState: self)
         notchWindow = NotchWindow(contentView: overlay)
         notchWindow?.orderFront(nil)
@@ -249,6 +255,7 @@ final class AppState {
             defer: false
         )
         window.title = "Setup Claude Code Hooks"
+        window.appearance = AppearanceHelper.nsAppearance()
         window.contentView = NSHostingView(rootView: view)
         window.center()
         window.makeKeyAndOrderFront(nil)
@@ -275,6 +282,23 @@ final class AppState {
         }
     }
 
+    private func observeAppearanceChanges() {
+        appearanceObserver = UserDefaults.standard.publisher(
+            for: \.appearanceMode
+        ).sink { [weak self] _ in
+            Task { @MainActor [weak self] in
+                self?.applyAppearanceToAllWindows()
+            }
+        }
+    }
+
+    private func applyAppearanceToAllWindows() {
+        let appearance = AppearanceHelper.nsAppearance()
+        notchWindow?.appearance = appearance
+        settingsWindow?.appearance = appearance
+        onboardingWindow?.appearance = appearance
+    }
+
     private func jumpToMostUrgentSession() {
         guard let session = sessionManager.activeSessions.first else { return }
         TerminalActivator.activate(session: session)
@@ -283,6 +307,7 @@ final class AppState {
     func showSettings() {
         if let window = settingsWindow {
             window.makeKeyAndOrderFront(nil)
+            NSApp.activate(ignoringOtherApps: true)
             return
         }
 
@@ -295,9 +320,28 @@ final class AppState {
         )
         window.title = "Claude Notch Settings"
         window.minSize = NSSize(width: 480, height: 300)
+        window.appearance = AppearanceHelper.nsAppearance()
         window.contentView = NSHostingView(rootView: view)
         window.center()
+
+        // Show in cmd+tab while settings is open
+        NSApp.setActivationPolicy(.regular)
+        NSApp.activate(ignoringOtherApps: true)
+
         window.makeKeyAndOrderFront(nil)
         settingsWindow = window
+
+        // Watch for close to hide from cmd+tab again
+        NotificationCenter.default.addObserver(
+            forName: NSWindow.willCloseNotification,
+            object: window,
+            queue: .main
+        ) { [weak self] _ in
+            self?.settingsWindow = nil
+            // Only go back to accessory if no other windows are open
+            if self?.onboardingWindow == nil {
+                NSApp.setActivationPolicy(.accessory)
+            }
+        }
     }
 }
