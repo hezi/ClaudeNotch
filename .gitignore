@@ -13,3 +13,9 @@ xcuserdata/
 # Xcode state
 *.xccheckout
 *.xcscmblueprint
+
+# Local docs
+local-docs/
+
+# Plans
+Plans/
