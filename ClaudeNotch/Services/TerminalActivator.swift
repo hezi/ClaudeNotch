@@ -143,6 +143,11 @@ enum TerminalActivator {
 
     // MARK: - Ghostty
 
+    /// Cached TTY→tab index mapping for Ghostty. Invalidated when tab count changes.
+    private static var ghosttyTTYCache: [String: Int] = [:]  // tty → tab index (1-based)
+    private static var ghosttyCacheTabCount: Int = 0
+    private static var ghosttyCacheTime: Date = .distantPast
+
     private static func activateGhostty(session: Session) {
         // Strategy: find the Ghostty tab index that owns this session's TTY,
         // then focus that tab via AppleScript.
@@ -262,7 +267,93 @@ enum TerminalActivator {
     /// Resolve which Ghostty tab (1-based index in AppleScript iteration order) owns the target TTY.
     /// Queries AppleScript for tab name+cwd per tab, then correlates with process tree info.
     private static func resolveGhosttyTabByTTY(targetTTY: String) -> Int? {
-        // Step 1: Get tab list from AppleScript (name + working directory per tab)
+        // Check cache first (valid for 30 seconds)
+        let cacheAge = Date().timeIntervalSince(ghosttyCacheTime)
+        if cacheAge < 30, let cached = ghosttyTTYCache[targetTTY] {
+            logger.info("Ghostty TTY resolve: cache hit → tab \(cached) (age: \(Int(cacheAge))s)")
+            return cached
+        }
+
+        // Cache miss or stale — rebuild
+        rebuildGhosttyTTYCache()
+        return ghosttyTTYCache[targetTTY]
+    }
+
+    private static func rebuildGhosttyTTYCache() {
+        ghosttyTTYCache.removeAll()
+        ghosttyCacheTime = Date()
+
+        // Step 1: Single ps call for all process info
+        guard let ghosttyApp = NSRunningApplication.runningApplications(
+            withBundleIdentifier: "com.mitchellh.ghostty"
+        ).first else { return }
+        let ghosttyPID = Int(ghosttyApp.processIdentifier)
+
+        let psProcess = Process()
+        psProcess.executableURL = URL(fileURLWithPath: "/bin/ps")
+        psProcess.arguments = ["-eo", "pid,ppid,tty"]
+        let psPipe = Pipe()
+        psProcess.standardOutput = psPipe
+        psProcess.standardError = FileHandle.nullDevice
+        do { try psProcess.run() } catch { return }
+        let psData = psPipe.fileHandleForReading.readDataToEndOfFile()
+        psProcess.waitUntilExit()
+        guard let psOutput = String(data: psData, encoding: .utf8) else { return }
+
+        // Find Ghostty's login children and their shell children
+        var loginPIDs: [(pid: Int, tty: String)] = []
+        for line in psOutput.components(separatedBy: .newlines) {
+            let parts = line.trimmingCharacters(in: .whitespaces)
+                .components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+            guard parts.count >= 3, let pid = Int(parts[0]), let ppid = Int(parts[1]),
+                  ppid == ghosttyPID, parts[2] != "??" else { continue }
+            let tty = parts[2].hasPrefix("s") ? "tty" + parts[2] : parts[2]
+            loginPIDs.append((pid, tty))
+        }
+        guard !loginPIDs.isEmpty else { return }
+
+        // Find shell child of each login (from same ps output)
+        var shellPIDs: [Int] = []
+        var ttyForShell: [Int: String] = [:] // shellPID → tty
+        for login in loginPIDs {
+            for line in psOutput.components(separatedBy: .newlines) {
+                let parts = line.trimmingCharacters(in: .whitespaces)
+                    .components(separatedBy: .whitespaces).filter { !$0.isEmpty }
+                guard parts.count >= 2, let pid = Int(parts[0]), let ppid = Int(parts[1]),
+                      ppid == login.pid else { continue }
+                shellPIDs.append(pid)
+                ttyForShell[pid] = login.tty
+                break
+            }
+        }
+
+        // Step 2: Single batched lsof call for all shell cwds
+        var ttyToCwd: [String: String] = [:]
+        if !shellPIDs.isEmpty {
+            let pidArgs = shellPIDs.map(String.init).joined(separator: ",")
+            let lsofProcess = Process()
+            lsofProcess.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
+            lsofProcess.arguments = ["-a", "-p", pidArgs, "-d", "cwd", "-Fn"]
+            let lsofPipe = Pipe()
+            lsofProcess.standardOutput = lsofPipe
+            lsofProcess.standardError = FileHandle.nullDevice
+            do { try lsofProcess.run() } catch { /* continue */ }
+            let lsofData = lsofPipe.fileHandleForReading.readDataToEndOfFile()
+            lsofProcess.waitUntilExit()
+
+            if let lsofOutput = String(data: lsofData, encoding: .utf8) {
+                var currentPID: Int?
+                for line in lsofOutput.components(separatedBy: .newlines) {
+                    if line.hasPrefix("p"), let pid = Int(line.dropFirst(1)) {
+                        currentPID = pid
+                    } else if line.hasPrefix("n/"), let pid = currentPID, let tty = ttyForShell[pid] {
+                        ttyToCwd[tty] = String(line.dropFirst(1))
+                    }
+                }
+            }
+        }
+
+        // Step 3: Get tab list from AppleScript (single call)
         let queryScript = """
             tell application "Ghostty"
                 set output to ""
@@ -284,11 +375,11 @@ enum TerminalActivator {
         queryProcess.standardOutput = queryPipe
         queryProcess.standardError = queryErrPipe
 
-        do { try queryProcess.run() } catch { return nil }
+        do { try queryProcess.run() } catch { return }
         let queryData = queryPipe.fileHandleForReading.readDataToEndOfFile()
         queryProcess.waitUntilExit()
         guard queryProcess.terminationStatus == 0,
-              let tabList = String(data: queryData, encoding: .utf8) else { return nil }
+              let tabList = String(data: queryData, encoding: .utf8) else { return }
 
         struct GhosttyTab {
             let index: Int // 1-based
@@ -308,46 +399,29 @@ enum TerminalActivator {
                 )
             }
 
-        guard !tabs.isEmpty else { return nil }
+        guard !tabs.isEmpty else { return }
 
-        // Step 2: Get TTY → shell cwd map from process tree
-        guard let ghosttyApp = NSRunningApplication.runningApplications(
-            withBundleIdentifier: "com.mitchellh.ghostty"
-        ).first else { return nil }
+        // Step 4: Correlate tabs with TTYs
+        var unassignedTTYs = ttyToCwd
+        var result: [String: Int] = [:]
 
-        let ttyToCwd = buildTTYToCwdMap(ghosttyPID: Int(ghosttyApp.processIdentifier))
-        guard let targetCwd = ttyToCwd[targetTTY] else {
-            logger.info("Ghostty TTY resolve: target TTY \(targetTTY) not found in process tree")
-            return nil
-        }
-
-        logger.info("Ghostty TTY resolve: target TTY \(targetTTY) has shell cwd=\(targetCwd)")
-        logger.info("Ghostty TTY resolve: tabs=\(tabs.map { "[\($0.index)] cwd=\($0.cwd) name=\($0.name)" }.joined(separator: ", "))")
-        logger.info("Ghostty TTY resolve: ttyMap=\(ttyToCwd.map { "\($0.key)→\($0.value)" }.joined(separator: ", "))")
-
-        // Step 3: Correlate — for each tab, find which TTY matches it.
-        // We match tabs to TTYs by working directory + process of elimination.
-        // Build a list of (tty, cwd) entries and try to assign each to a tab.
-        var unassignedTTYs = ttyToCwd // tty → shell cwd
-        var tabToTTY: [Int: String] = [:] // tab index → tty
-
-        // Pass 1: exact cwd matches (unique)
+        // Pass 1: exact cwd match
         for tab in tabs {
-            let matchingTTYs = unassignedTTYs.filter { $0.value == tab.cwd }
-            if matchingTTYs.count == 1, let match = matchingTTYs.first {
-                tabToTTY[tab.index] = match.key
-                unassignedTTYs.removeValue(forKey: match.key)
+            let matches = unassignedTTYs.filter { $0.value == tab.cwd }
+            if matches.count == 1, let m = matches.first {
+                result[m.key] = tab.index
+                unassignedTTYs.removeValue(forKey: m.key)
             }
         }
 
-        // Pass 2: tab name contains the cwd leaf of a TTY's shell
-        for tab in tabs where tabToTTY[tab.index] == nil {
+        // Pass 2: tab name contains cwd leaf
+        for tab in tabs where !result.values.contains(tab.index) {
             for (tty, shellCwd) in unassignedTTYs {
                 let leaf = (shellCwd as NSString).lastPathComponent
                 if tab.name.contains(leaf) {
-                    let otherMatches = unassignedTTYs.filter { tab.name.contains(($0.value as NSString).lastPathComponent) }
-                    if otherMatches.count == 1 {
-                        tabToTTY[tab.index] = tty
+                    let others = unassignedTTYs.filter { tab.name.contains(($0.value as NSString).lastPathComponent) }
+                    if others.count == 1 {
+                        result[tty] = tab.index
                         unassignedTTYs.removeValue(forKey: tty)
                         break
                     }
@@ -355,102 +429,15 @@ enum TerminalActivator {
             }
         }
 
-        // Pass 3: if only one tab and one TTY remain unassigned, pair them
-        let unassignedTabs = tabs.filter { tabToTTY[$0.index] == nil }
-        if unassignedTabs.count == 1 && unassignedTTYs.count == 1 {
-            tabToTTY[unassignedTabs[0].index] = unassignedTTYs.keys.first!
+        // Pass 3: process of elimination
+        let unassignedTabIndices = Set(tabs.map(\.index)).subtracting(result.values)
+        if unassignedTabIndices.count == 1 && unassignedTTYs.count == 1 {
+            result[unassignedTTYs.keys.first!] = unassignedTabIndices.first!
         }
 
-        logger.info("Ghostty TTY resolve: assignments=\(tabToTTY.map { "tab\($0.key)→\($0.value)" }.joined(separator: ", "))")
-
-        // Find which tab got our target TTY
-        if let matchedTab = tabToTTY.first(where: { $0.value == targetTTY }) {
-            logger.info("Ghostty TTY resolve: ✓ target TTY \(targetTTY) → tab \(matchedTab.key)")
-            return matchedTab.key
-        }
-
-        logger.info("Ghostty TTY resolve: ✗ could not resolve target TTY \(targetTTY)")
-        return nil
-    }
-
-    /// Build a map of TTY → shell working directory for each Ghostty tab.
-    private static func buildTTYToCwdMap(ghosttyPID: Int) -> [String: String] {
-        // Get all processes with their PID, PPID, and TTY
-        let psProcess = Process()
-        psProcess.executableURL = URL(fileURLWithPath: "/bin/ps")
-        psProcess.arguments = ["-eo", "pid,ppid,tty"]
-        let psPipe = Pipe()
-        psProcess.standardOutput = psPipe
-        psProcess.standardError = FileHandle.nullDevice
-
-        do { try psProcess.run() } catch { return [:] }
-        let psData = psPipe.fileHandleForReading.readDataToEndOfFile()
-        psProcess.waitUntilExit()
-        guard let psOutput = String(data: psData, encoding: .utf8) else { return [:] }
-
-        // Find login processes (direct children of Ghostty) and their TTYs
-        struct LoginEntry {
-            let pid: Int
-            let tty: String
-        }
-
-        var logins: [LoginEntry] = []
-        for line in psOutput.components(separatedBy: .newlines) {
-            let parts = line.trimmingCharacters(in: .whitespaces)
-                .components(separatedBy: .whitespaces)
-                .filter { !$0.isEmpty }
-            guard parts.count >= 3,
-                  let pid = Int(parts[0]),
-                  let ppid = Int(parts[1]),
-                  ppid == ghosttyPID else { continue }
-            let tty = parts[2]
-            guard tty != "??" else { continue }
-            let normalizedTTY = tty.hasPrefix("s") ? "tty" + tty : tty
-            logins.append(LoginEntry(pid: pid, tty: normalizedTTY))
-        }
-
-        // For each login, find its shell child and get the shell's cwd via lsof
-        var ttyToCwd: [String: String] = [:]
-        for login in logins {
-            // Find shell child (zsh/bash/fish) of this login process
-            var shellPID: Int?
-            for line in psOutput.components(separatedBy: .newlines) {
-                let parts = line.trimmingCharacters(in: .whitespaces)
-                    .components(separatedBy: .whitespaces)
-                    .filter { !$0.isEmpty }
-                guard parts.count >= 2,
-                      let pid = Int(parts[0]),
-                      let ppid = Int(parts[1]),
-                      ppid == login.pid else { continue }
-                shellPID = pid
-                break
-            }
-
-            guard let shellPID else { continue }
-
-            // Get shell's cwd via lsof
-            let lsofProcess = Process()
-            lsofProcess.executableURL = URL(fileURLWithPath: "/usr/sbin/lsof")
-            lsofProcess.arguments = ["-a", "-p", String(shellPID), "-d", "cwd", "-Fn"]
-            let lsofPipe = Pipe()
-            lsofProcess.standardOutput = lsofPipe
-            lsofProcess.standardError = FileHandle.nullDevice
-
-            do { try lsofProcess.run() } catch { continue }
-            let lsofData = lsofPipe.fileHandleForReading.readDataToEndOfFile()
-            lsofProcess.waitUntilExit()
-
-            if let lsofOutput = String(data: lsofData, encoding: .utf8) {
-                for line in lsofOutput.components(separatedBy: .newlines) {
-                    if line.hasPrefix("n/") {
-                        ttyToCwd[login.tty] = String(line.dropFirst(1))
-                        break
-                    }
-                }
-            }
-        }
-
-        return ttyToCwd
+        ghosttyTTYCache = result
+        ghosttyCacheTabCount = tabs.count
+        logger.info("Ghostty TTY cache rebuilt: \(result.map { "\($0.key)→tab\($0.value)" }.joined(separator: ", ")) (\(tabs.count) tabs)")
     }
 
     // MARK: - Generic App Activation

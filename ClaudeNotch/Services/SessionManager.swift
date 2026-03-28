@@ -61,6 +61,7 @@ final class SessionManager {
 
             let session = Session(id: info.sessionId, cwd: info.cwd)
             session.name = info.name
+                ?? ProcessScanner.readTranscriptTitle(sessionId: info.sessionId, cwd: info.cwd)
             session.startTime = Date(timeIntervalSince1970: TimeInterval(info.startedAt) / 1000)
             session.state = .idle
             session.processPID = info.pid
@@ -68,7 +69,7 @@ final class SessionManager {
             session.terminalBundleId = ProcessScanner.getTerminalApp(pid: info.pid)
             sessions[info.sessionId] = session
 
-            logger.info("Bootstrapped session: \(info.name ?? info.sessionId) tty=\(session.tty ?? "?") terminal=\(session.terminalBundleId ?? "?")")
+            logger.info("Bootstrapped session: \(session.name ?? info.sessionId) tty=\(session.tty ?? "?") terminal=\(session.terminalBundleId ?? "?")")
         }
 
         if !detected.isEmpty {
@@ -266,9 +267,15 @@ final class SessionManager {
         }
         if needsName, let name = match.name {
             session.name = name
-            logger.info("[enrich] set name: '\(name)'")
+            logger.info("[enrich] set name: '\(name)' (from session file)")
         } else if needsName {
-            logger.info("[enrich] match has no name, session stays unnamed")
+            // Fallback: read custom-title from the JSONL transcript
+            if let title = ProcessScanner.readTranscriptTitle(sessionId: session.id, cwd: session.cwd) {
+                session.name = title
+                logger.info("[enrich] set name: '\(title)' (from transcript)")
+            } else {
+                logger.info("[enrich] no name found (session file or transcript)")
+            }
         }
     }
 
@@ -463,6 +470,11 @@ final class SessionManager {
         case "WebFetch":
             if case .object(let obj) = toolInput, case .string(let url) = obj["url"] {
                 return url
+            }
+
+        case "WebSearch":
+            if case .object(let obj) = toolInput, case .string(let query) = obj["query"] {
+                return query
             }
 
         case "Agent":
