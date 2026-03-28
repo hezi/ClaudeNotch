@@ -195,55 +195,85 @@ struct NotchOverlay: View {
     }
 
     private func sessionRow(_ session: Session) -> some View {
-        HStack(spacing: 8) {
-            // Main row content (tappable → terminal)
-            Button {
-                TerminalActivator.activate(session: session)
-            } label: {
-                HStack(spacing: 8) {
-                    stateIndicator(for: session.state)
-                        .frame(width: 8, height: 8)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 8) {
+                // Main row content (tappable → terminal)
+                Button {
+                    TerminalActivator.activate(session: session)
+                } label: {
+                    HStack(spacing: 8) {
+                        stateIndicator(for: session.state)
+                            .frame(width: 8, height: 8)
 
-                    VStack(alignment: .leading, spacing: 1) {
-                        Text(session.projectName)
-                            .font(scaledFont(size: fontScale.bodySize, weight: .medium))
-                            .foregroundStyle(fg)
-                            .lineLimit(1)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(session.projectName)
+                                .font(scaledFont(size: fontScale.bodySize, weight: .medium))
+                                .foregroundStyle(fg)
+                                .lineLimit(1)
 
-                        Text(stateDetail(for: session))
-                            .font(scaledFont(size: fontScale.detailSize))
-                            .foregroundStyle(fg.opacity(0.45))
-                            .lineLimit(1)
+                            Text(stateDetail(for: session))
+                                .font(scaledFont(size: fontScale.detailSize))
+                                .foregroundStyle(fg.opacity(0.45))
+                                .lineLimit(1)
+                        }
+
+                        Spacer()
+
+                        ModeBadge(mode: session.permissionMode)
+
+                        Text(session.elapsedFormatted)
+                            .font(scaledFont(size: fontScale.monoSize, design: .monospaced))
+                            .foregroundStyle(fg.opacity(0.35))
                     }
+                }
+                .buttonStyle(.plain)
 
-                    Spacer()
+                // Action buttons
+                HStack(spacing: 4) {
+                    Button { TerminalActivator.activate(session: session) } label: {
+                        Image(systemName: "apple.terminal")
+                            .font(scaledFont(size: fontScale.detailSize))
+                            .foregroundStyle(fg.opacity(0.3))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open in terminal")
 
-                    ModeBadge(mode: session.permissionMode)
-
-                    Text(session.elapsedFormatted)
-                        .font(scaledFont(size: fontScale.monoSize, design: .monospaced))
-                        .foregroundStyle(fg.opacity(0.35))
+                    Button { NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd)) } label: {
+                        Image(systemName: "folder")
+                            .font(scaledFont(size: fontScale.detailSize))
+                            .foregroundStyle(fg.opacity(0.3))
+                    }
+                    .buttonStyle(.plain)
+                    .help("Open folder in Finder")
                 }
             }
-            .buttonStyle(.plain)
 
-            // Action buttons
-            HStack(spacing: 4) {
-                Button { TerminalActivator.activate(session: session) } label: {
-                    Image(systemName: "apple.terminal")
-                        .font(scaledFont(size: fontScale.detailSize))
-                        .foregroundStyle(fg.opacity(0.3))
+            // Clickable tool summary (URLs, search queries) below the main row
+            if let summary = session.pendingToolSummary, session.currentTool == "WebFetch",
+               let url = URL(string: summary) {
+                Link(destination: url) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "globe")
+                            .font(scaledFont(size: fontScale.badgeSize))
+                        Text(summary)
+                            .font(scaledFont(size: fontScale.monoSize, design: .monospaced))
+                            .lineLimit(1)
+                            .underline()
+                    }
+                    .foregroundColor(.blue)
                 }
-                .buttonStyle(.plain)
-                .help("Open in terminal")
-
-                Button { NSWorkspace.shared.open(URL(fileURLWithPath: session.cwd)) } label: {
-                    Image(systemName: "folder")
-                        .font(scaledFont(size: fontScale.detailSize))
-                        .foregroundStyle(fg.opacity(0.3))
+            } else if let summary = session.pendingToolSummary, session.currentTool == "WebSearch" {
+                Link(destination: URL(string: "https://www.google.com/search?q=\(summary.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed) ?? summary)")!) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "magnifyingglass")
+                            .font(scaledFont(size: fontScale.badgeSize))
+                        Text(summary)
+                            .font(scaledFont(size: fontScale.monoSize))
+                            .lineLimit(1)
+                            .underline()
+                    }
+                    .foregroundColor(.blue)
                 }
-                .buttonStyle(.plain)
-                .help("Open folder in Finder")
             }
         }
         .padding(.horizontal, 8)
@@ -252,6 +282,140 @@ struct NotchOverlay: View {
             RoundedRectangle(cornerRadius: 8, style: .continuous)
                 .fill(fg.opacity(0.06))
         )
+    }
+
+    // MARK: - Shared: Tool summary display (used by both approval row modes)
+
+    @ViewBuilder
+    private func toolSummaryBlock(summary: String?, toolName: String?) -> some View {
+        if let summary {
+            if toolName == "WebFetch", let url = URL(string: summary) {
+                Link(destination: url) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "globe")
+                            .font(scaledFont(size: fontScale.badgeSize))
+                        Text(summary)
+                            .font(scaledFont(size: fontScale.monoSize, design: .monospaced))
+                            .lineLimit(2)
+                            .underline()
+                    }
+                    .foregroundColor(.blue)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(.blue.opacity(0.06))
+                    )
+                }
+            } else if toolName == "WebSearch",
+                      let encoded = summary.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                      let url = URL(string: "https://www.google.com/search?q=\(encoded)") {
+                Link(destination: url) {
+                    HStack(spacing: 4) {
+                        Image(systemName: "magnifyingglass")
+                            .font(scaledFont(size: fontScale.badgeSize))
+                        Text(summary)
+                            .font(scaledFont(size: fontScale.monoSize))
+                            .lineLimit(2)
+                            .underline()
+                    }
+                    .foregroundColor(.blue)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(.blue.opacity(0.06))
+                    )
+                }
+            } else {
+                Text(summary)
+                    .font(scaledFont(size: fontScale.monoSize, design: .monospaced))
+                    .foregroundStyle(fg.opacity(0.7))
+                    .lineLimit(3)
+                    .padding(.horizontal, 6)
+                    .padding(.vertical, 4)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(
+                        RoundedRectangle(cornerRadius: 5, style: .continuous)
+                            .fill(fg.opacity(0.04))
+                    )
+            }
+        }
+    }
+
+    // MARK: - Shared: Approval action buttons
+
+    @ViewBuilder
+    private func approvalButtons(
+        session: Session,
+        allowAction: @escaping () -> Void,
+        denyAction: @escaping () -> Void,
+        showAlways: Bool = true,
+        queueCount: Int = 0
+    ) -> some View {
+        HStack(spacing: 6) {
+            Button {
+                allowAction()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "checkmark")
+                        .font(scaledFont(size: fontScale.badgeSize, weight: .bold))
+                    Text("Allow")
+                        .font(scaledFont(size: fontScale.monoSize, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(.green.opacity(0.7)))
+            }
+            .buttonStyle(.plain)
+
+            if showAlways {
+                Button {
+                    hookServer.allowAlwaysPermission(sessionId: session.id)
+                } label: {
+                    Text("Always")
+                        .font(scaledFont(size: fontScale.monoSize, weight: .medium))
+                        .foregroundStyle(.green.opacity(0.8))
+                }
+                .buttonStyle(.plain)
+            }
+
+            Button {
+                denyAction()
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "xmark")
+                        .font(scaledFont(size: fontScale.badgeSize, weight: .bold))
+                    Text("Deny")
+                        .font(scaledFont(size: fontScale.monoSize, weight: .semibold))
+                }
+                .foregroundStyle(.white)
+                .padding(.horizontal, 10)
+                .padding(.vertical, 5)
+                .background(Capsule().fill(.red.opacity(0.5)))
+            }
+            .buttonStyle(.plain)
+
+            Spacer()
+
+            if queueCount > 1 {
+                Text("+\(queueCount - 1)")
+                    .font(scaledFont(size: fontScale.badgeSize, weight: .semibold))
+                    .foregroundStyle(.yellow.opacity(0.7))
+            }
+
+            Button {
+                hookServer.dismissPermission(sessionId: session.id)
+            } label: {
+                Text("Skip")
+                    .font(scaledFont(size: fontScale.badgeSize, weight: .medium))
+                    .foregroundStyle(fg.opacity(0.4))
+            }
+            .buttonStyle(.plain)
+        }
     }
 
     // MARK: - Approval Row for specific queued item (show-all mode)
@@ -286,40 +450,14 @@ struct NotchOverlay: View {
                     .background(Capsule().fill(.yellow.opacity(0.15)))
             }
 
-            if let summary = pending.toolSummary {
-                Text(summary)
-                    .font(scaledFont(size: fontScale.monoSize, design: .monospaced))
-                    .foregroundStyle(fg.opacity(0.7))
-                    .lineLimit(2)
-            }
+            toolSummaryBlock(summary: pending.toolSummary, toolName: pending.toolName)
 
-            HStack(spacing: 6) {
-                Button {
-                    hookServer.allowSpecificPermission(id: pending.id, sessionId: session.id)
-                } label: {
-                    Text("Allow")
-                        .font(scaledFont(size: fontScale.monoSize, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(.green.opacity(0.7)))
-                }
-                .buttonStyle(.plain)
-
-                Button {
-                    hookServer.denySpecificPermission(id: pending.id, sessionId: session.id)
-                } label: {
-                    Text("Deny")
-                        .font(scaledFont(size: fontScale.monoSize, weight: .semibold))
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 8)
-                        .padding(.vertical, 3)
-                        .background(Capsule().fill(.red.opacity(0.5)))
-                }
-                .buttonStyle(.plain)
-
-                Spacer()
-            }
+            approvalButtons(
+                session: session,
+                allowAction: { hookServer.allowSpecificPermission(id: pending.id, sessionId: session.id) },
+                denyAction: { hookServer.denySpecificPermission(id: pending.id, sessionId: session.id) },
+                showAlways: index == 0
+            )
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 6)
@@ -333,18 +471,17 @@ struct NotchOverlay: View {
         )
     }
 
-    // MARK: - Approval Row (rich detail)
+    // MARK: - Approval Row (single / queue-front mode)
 
     private func approvalRow(_ session: Session) -> some View {
         let hasPending = hookServer.nextPending(for: session.id) != nil
         let pending = hookServer.nextPending(for: session.id)
         let queueCount = hookServer.pendingCount(for: session.id)
-        // Use pending's info if available (more accurate), fall back to session
         let toolName = pending?.toolName ?? session.currentTool
         let summary = pending?.toolSummary ?? session.pendingToolSummary
 
         return VStack(alignment: .leading, spacing: 6) {
-            // Header: project + tool (tappable to navigate)
+            // Header
             Button { TerminalActivator.activate(session: session) } label: {
                 HStack(spacing: 6) {
                     PulseView(color: .yellow)
@@ -360,97 +497,27 @@ struct NotchOverlay: View {
 
                     Spacer()
 
-                if let toolName {
-                    Text(toolName)
-                        .font(scaledFont(size: fontScale.badgeSize, weight: .medium, design: .monospaced))
-                        .foregroundStyle(.yellow.opacity(0.9))
-                        .padding(.horizontal, 6)
-                        .padding(.vertical, 2)
-                        .background(
-                            Capsule().fill(.yellow.opacity(0.15))
-                        )
-                }
+                    if let toolName {
+                        Text(toolName)
+                            .font(scaledFont(size: fontScale.badgeSize, weight: .medium, design: .monospaced))
+                            .foregroundStyle(.yellow.opacity(0.9))
+                            .padding(.horizontal, 6)
+                            .padding(.vertical, 2)
+                            .background(Capsule().fill(.yellow.opacity(0.15)))
+                    }
                 }
             }
             .buttonStyle(.plain)
 
-            // Tool summary (command, file path, URL, etc.)
-            if let summary {
-                toolSummaryView(summary)
-                    .padding(.horizontal, 6)
-                    .padding(.vertical, 4)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(
-                        RoundedRectangle(cornerRadius: 5, style: .continuous)
-                            .fill(fg.opacity(0.04))
-                    )
-            }
+            toolSummaryBlock(summary: summary, toolName: toolName)
 
-            // Decision buttons or fallback hint
             if hasPending {
-                HStack(spacing: 6) {
-                    Button {
-                        hookServer.allowPermission(sessionId: session.id)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "checkmark")
-                                .font(scaledFont(size: fontScale.badgeSize, weight: .bold))
-                            Text("Allow")
-                                .font(scaledFont(size: fontScale.monoSize, weight: .semibold))
-                        }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(
-                            Capsule().fill(.green.opacity(0.7))
-                        )
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        hookServer.allowAlwaysPermission(sessionId: session.id)
-                    } label: {
-                        Text("Always")
-                            .font(scaledFont(size: fontScale.monoSize, weight: .medium))
-                            .foregroundStyle(.green.opacity(0.8))
-                    }
-                    .buttonStyle(.plain)
-
-                    Button {
-                        hookServer.denyPermission(sessionId: session.id)
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "xmark")
-                                .font(scaledFont(size: fontScale.badgeSize, weight: .bold))
-                            Text("Deny")
-                                .font(scaledFont(size: fontScale.monoSize, weight: .semibold))
-                        }
-                        .foregroundStyle(.white)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 5)
-                        .background(
-                            Capsule().fill(.red.opacity(0.5))
-                        )
-                    }
-                    .buttonStyle(.plain)
-
-                    Spacer()
-
-                    if queueCount > 1 {
-                        Text("+\(queueCount - 1)")
-                            .font(scaledFont(size: fontScale.badgeSize, weight: .semibold))
-                            .foregroundStyle(.yellow.opacity(0.7))
-                    }
-
-                    Button {
-                        hookServer.dismissPermission(sessionId: session.id)
-                    } label: {
-                        Text("Skip")
-                            .font(scaledFont(size: fontScale.badgeSize, weight: .medium))
-                            .foregroundStyle(fg.opacity(0.4))
-                    }
-                    .buttonStyle(.plain)
-                }
+                approvalButtons(
+                    session: session,
+                    allowAction: { hookServer.allowPermission(sessionId: session.id) },
+                    denyAction: { hookServer.denyPermission(sessionId: session.id) },
+                    queueCount: queueCount
+                )
             } else {
                 Text("Waiting for approval in terminal")
                     .font(scaledFont(size: fontScale.badgeSize, weight: .medium))
@@ -602,40 +669,45 @@ struct NotchOverlay: View {
     // MARK: - Tool Summary (with clickable URLs)
 
     @ViewBuilder
-    private func toolSummaryView(_ summary: String) -> some View {
-        if let url = URL(string: summary), url.scheme?.hasPrefix("http") == true {
-            Button { NSWorkspace.shared.open(url) } label: {
-                HStack(spacing: 4) {
-                    Text(summary)
-                        .font(scaledFont(size: fontScale.monoSize, design: .monospaced))
-                        .foregroundStyle(.blue.opacity(0.9))
-                        .lineLimit(2)
-                        .underline()
-                    Image(systemName: "arrow.up.right")
-                        .font(scaledFont(size: fontScale.badgeSize))
-                        .foregroundStyle(.blue.opacity(0.6))
-                }
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(fg.opacity(0.04))
-                )
+    private func toolSummaryView(_ summary: String, toolName: String? = nil) -> some View {
+        if toolName == "WebFetch" {
+            HStack(spacing: 4) {
+                Image(systemName: "globe")
+                    .font(scaledFont(size: fontScale.badgeSize))
+                    .foregroundStyle(.blue.opacity(0.6))
+                Text(summary)
+                    .font(scaledFont(size: fontScale.monoSize, design: .monospaced))
+                    .foregroundStyle(.blue.opacity(0.9))
+                    .lineLimit(2)
+                    .underline()
             }
-            .buttonStyle(.plain)
+            .onTapGesture {
+                if let url = URL(string: summary) {
+                    NSWorkspace.shared.open(url)
+                }
+            }
+        } else if toolName == "WebSearch" {
+            HStack(spacing: 4) {
+                Image(systemName: "magnifyingglass")
+                    .font(scaledFont(size: fontScale.badgeSize))
+                    .foregroundStyle(.blue.opacity(0.6))
+                Text(summary)
+                    .font(scaledFont(size: fontScale.monoSize))
+                    .foregroundStyle(.blue.opacity(0.9))
+                    .lineLimit(2)
+                    .underline()
+            }
+            .onTapGesture {
+                if let encoded = summary.addingPercentEncoding(withAllowedCharacters: .urlQueryAllowed),
+                   let url = URL(string: "https://www.google.com/search?q=\(encoded)") {
+                    NSWorkspace.shared.open(url)
+                }
+            }
         } else {
             Text(summary)
                 .font(scaledFont(size: fontScale.monoSize, design: .monospaced))
                 .foregroundStyle(fg.opacity(0.7))
                 .lineLimit(3)
-                .padding(.horizontal, 6)
-                .padding(.vertical, 4)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 5, style: .continuous)
-                        .fill(fg.opacity(0.04))
-                )
         }
     }
 
